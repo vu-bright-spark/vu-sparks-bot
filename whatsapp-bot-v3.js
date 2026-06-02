@@ -1,0 +1,81 @@
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const pino = require('pino');
+const qrcode = require('qrcode');
+const path = require('path');
+
+let sock = null;
+let currentQR = null;
+let connectionStatus = 'disconnected';
+
+async function connectToWhatsApp() {
+    try {
+        console.log('🔄 Starting WhatsApp connection...');
+        
+        const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, 'auth_info'));
+
+        sock = makeWASocket({
+            auth: state,
+            logger: pino({ level: 'silent' }),
+            printQRInTerminal: false,
+            browser: ['Ubuntu', 'Chrome', '120.0.0.0']
+        });
+
+        sock.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect, qr } = update;
+
+            if (qr) {
+                console.log('📱 QR Code generated!');
+                try {
+                    const qrImage = await qrcode.toDataURL(qr);
+                    currentQR = qrImage;
+                    console.log('✅ QR Image set');
+                } catch (err) {
+                    console.error('❌ Error generating QR:', err.message);
+                }
+            }
+
+            if (connection === 'open') {
+                console.log('✅ WhatsApp Connected!');
+                connectionStatus = 'connected';
+                currentQR = null;
+            } else if (connection === 'close') {
+                connectionStatus = 'disconnected';
+                console.log('⚠️ Connection closed');
+                const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+                if (shouldReconnect) {
+                    setTimeout(() => connectToWhatsApp(), 3000);
+                }
+            }
+        });
+
+        sock.ev.on('creds.update', saveCreds);
+
+        sock.ev.on('messages.upsert', async (m) => {
+            if (!m?.messages) return;
+            const message = m.messages[0];
+            if (!message?.message) return;
+            console.log('📨 Message received:', message.key.remoteJid);
+        });
+
+        return sock;
+    } catch (error) {
+        console.error('❌ Error in connectToWhatsApp:', error.message);
+        throw error;
+    }
+}
+
+function getQRImage() {
+    return currentQR;
+}
+
+function isConnected() {
+    return connectionStatus === 'connected';
+}
+
+module.exports = {
+    connectToWhatsApp,
+    getQRImage,
+    isConnected,
+    getConnectionStatus: () => connectionStatus,
+    getSocket: () => sock
+};
