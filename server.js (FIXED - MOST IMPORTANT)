@@ -1,0 +1,284 @@
+const express = require('express');
+const cors = require('cors');
+const dotenv = require('dotenv');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const path = require('path');
+const db = require('./db');
+const whatsappBot = require('./whatsapp-bot-v3');
+const qrHandler = require('./qr-handler');
+const aiTraining = require('./ai-training');
+
+dotenv.config();
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
+
+app.use(cors());
+app.use(express.json());
+app.use(express.static('public'));
+
+function initializeAdmin() {
+    const email = 'hussainmurtaza5483@gmail.com';
+    const password = 'P@kistan2004';
+    
+    try {
+        const row = db.prepare('SELECT * FROM admins WHERE email = ?').get(email);
+        if (!row) {
+            bcrypt.hash(password, 10, (err, hash) => {
+                if (!err) {
+                    db.prepare('INSERT INTO admins (email, password) VALUES (?, ?)').run(email, hash);
+                    console.log('✅ Admin user created');
+                } else {
+                    console.error('❌ Error hashing password:', err);
+                }
+            });
+        }
+    } catch (error) {
+        console.error('❌ Error initializing admin:', error);
+    }
+}
+
+function verifyToken(req, res, next) {
+    const token = req.headers.authorization?.split(' ')[1];
+    
+    if (!token) {
+        return res.status(401).json({ error: 'No token provided' });
+    }
+
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        req.user = decoded;
+        next();
+    } catch (error) {
+        res.status(401).json({ error: 'Invalid token' });
+    }
+}
+
+app.post('/api/login', async (req, res) => {
+    const { email, password } = req.body;
+
+    try {
+        const admin = db.prepare('SELECT * FROM admins WHERE email = ?').get(email);
+        
+        if (!admin) {
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+
+        const validPassword = await bcrypt.compare(password, admin.password);
+        
+        if (!validPassword) {
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+
+        const token = jwt.sign({ id: admin.id, email: admin.email }, JWT_SECRET, { expiresIn: '7d' });
+        res.json({ token, email: admin.email });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/bot/status', verifyToken, (req, res) => {
+    try {
+        const status = whatsappBot.getConnectionStatus();
+        const connected = whatsappBot.isConnected();
+        res.json({ 
+            status, 
+            connected,
+            message: connected ? 'Bot is connected' : 'Bot is not connected'
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/qr', verifyToken, (req, res) => {
+    try {
+        const qrImage = qrHandler.getQRImage();
+        if (qrImage) {
+            res.json({ qr: qrImage });
+        } else {
+            res.json({ qr: null, message: 'QR code not available - connecting...' });
+        }
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/groups', verifyToken, (req, res) => {
+    try {
+        const groups = db.prepare('SELECT * FROM groups ORDER BY created_at DESC').all();
+        res.json(groups);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/groups', verifyToken, (req, res) => {
+    try {
+        const { group_id, group_name, description } = req.body;
+        
+        if (!group_id || !group_name) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+
+        db.prepare('INSERT INTO groups (group_id, group_name, description) VALUES (?, ?, ?)').run(group_id, group_name, description);
+        res.json({ success: true, message: 'Group added successfully' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/groups/:id', verifyToken, (req, res) => {
+    try {
+        const { id } = req.params;
+        db.prepare('DELETE FROM groups WHERE id = ?').run(id);
+        res.json({ success: true, message: 'Group deleted' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/commands', verifyToken, (req, res) => {
+    try {
+        const commands = db.prepare('SELECT * FROM commands ORDER BY created_at DESC').all();
+        res.json(commands);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/commands', verifyToken, (req, res) => {
+    try {
+        const { command, description, action } = req.body;
+        
+        if (!command || !description) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+
+        db.prepare('INSERT INTO commands (command, description, action) VALUES (?, ?, ?)').run(command, description, action);
+        res.json({ success: true, message: 'Command added successfully' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/commands/:id', verifyToken, (req, res) => {
+    try {
+        const { id } = req.params;
+        db.prepare('DELETE FROM commands WHERE id = ?').run(id);
+        res.json({ success: true, message: 'Command deleted' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/files', verifyToken, (req, res) => {
+    try {
+        const files = db.prepare('SELECT * FROM files ORDER BY created_at DESC').all();
+        res.json(files);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/files', verifyToken, (req, res) => {
+    try {
+        const { subject_code, file_type, drive_link, description } = req.body;
+        
+        if (!subject_code || !file_type || !drive_link) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+
+        db.prepare('INSERT INTO files (subject_code, file_type, drive_link, description) VALUES (?, ?, ?, ?)').run(subject_code, file_type, drive_link, description);
+        res.json({ success: true, message: 'File link added successfully' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/files/:id', verifyToken, (req, res) => {
+    try {
+        const { id } = req.params;
+        db.prepare('DELETE FROM files WHERE id = ?').run(id);
+        res.json({ success: true, message: 'File deleted' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/logs', verifyToken, (req, res) => {
+    try {
+        const logs = db.prepare('SELECT * FROM message_logs ORDER BY created_at DESC LIMIT 100').all();
+        res.json(logs);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/ai/training', verifyToken, (req, res) => {
+    try {
+        const allTraining = aiTraining.getAllTraining();
+        res.json({ training: allTraining, total: allTraining.length });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/ai/training/stats', verifyToken, (req, res) => {
+    try {
+        const stats = aiTraining.getStats();
+        res.json(stats);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/ai/training/add', verifyToken, (req, res) => {
+    try {
+        const { category, question, answer, language = 'urdu' } = req.body;
+        
+        if (!category || !question || !answer) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+
+        const success = aiTraining.addTraining(category, question, answer, language);
+        res.json({ success, message: success ? 'Training added successfully' : 'Failed to add training' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/ai/training/delete/:id', verifyToken, (req, res) => {
+    try {
+        const { id } = req.params;
+        const success = aiTraining.deleteTraining(id);
+        res.json({ success, message: success ? 'Training deleted successfully' : 'Failed to delete training' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.use((err, req, res, next) => {
+    console.error('❌ Server error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+});
+
+const server = app.listen(PORT, () => {
+    console.log(`\n🚀 Server running on port ${PORT}`);
+    console.log(`📱 WhatsApp Bot Portal: http://localhost:${PORT}`);
+    initializeAdmin();
+    console.log('✅ Bot initialization starting...\n');
+});
+
+(async () => {
+    try {
+        await whatsappBot.connectToWhatsApp();
+        console.log('✅ WhatsApp bot connection initialized');
+    } catch (error) {
+        console.error('❌ Error connecting bot:', error);
+    }
+})();
+
+module.exports = server;
