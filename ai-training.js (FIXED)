@@ -1,0 +1,135 @@
+const db = require('./db');
+
+function addTraining(category, question, answer, language = 'urdu') {
+    try {
+        if (!category || !question || !answer) {
+            throw new Error('Missing required fields');
+        }
+        
+        db.prepare('INSERT INTO ai_training (category, question, answer, language) VALUES (?, ?, ?, ?)').run(category, question, answer, language);
+        return true;
+    } catch (error) {
+        console.error('❌ Error adding training:', error);
+        return false;
+    }
+}
+
+function getAllTraining() {
+    try {
+        return db.prepare('SELECT * FROM ai_training ORDER BY created_at DESC').all();
+    } catch (error) {
+        console.error('❌ Error getting training:', error);
+        return [];
+    }
+}
+
+function deleteTraining(id) {
+    try {
+        if (!id) {
+            throw new Error('Invalid ID');
+        }
+        
+        db.prepare('DELETE FROM ai_training WHERE id = ?').run(id);
+        return true;
+    } catch (error) {
+        console.error('❌ Error deleting training:', error);
+        return false;
+    }
+}
+
+function getStats() {
+    try {
+        const total = db.prepare('SELECT COUNT(*) as count FROM ai_training').get().count;
+        const categories = {};
+        
+        const rows = db.prepare('SELECT category, COUNT(*) as count FROM ai_training GROUP BY category').all();
+        rows.forEach(row => {
+            categories[row.category] = row.count;
+        });
+
+        return {
+            totalRecords: total,
+            categories: categories
+        };
+    } catch (error) {
+        console.error('❌ Error getting stats:', error);
+        return { totalRecords: 0, categories: {} };
+    }
+}
+
+function search(query) {
+    try {
+        if (!query || query.trim() === '') {
+            return [];
+        }
+        
+        return db.prepare('SELECT * FROM ai_training WHERE question LIKE ? OR answer LIKE ? OR category LIKE ?').all(`%${query}%`, `%${query}%`, `%${query}%`);
+    } catch (error) {
+        console.error('❌ Error searching:', error);
+        return [];
+    }
+}
+
+function exportAsCSV() {
+    try {
+        const data = getAllTraining();
+        let csv = 'Category,Question,Answer,Language,Created\n';
+        
+        data.forEach(row => {
+            const escapedQ = (row.question || '').replace(/"/g, '""');
+            const escapedA = (row.answer || '').replace(/"/g, '""');
+            csv += `"${row.category}","${escapedQ}","${escapedA}","${row.language}","${row.created_at}"\n`;
+        });
+
+        return csv;
+    } catch (error) {
+        console.error('❌ Error exporting:', error);
+        return '';
+    }
+}
+
+function importBulkTraining(csvData) {
+    try {
+        if (!csvData || csvData.trim() === '') {
+            return 0;
+        }
+
+        const lines = csvData.trim().split('\n');
+        let imported = 0;
+
+        for (let i = 1; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (!line) continue;
+            
+            const parts = line.match(/(?:"([^"]*)"|([^,]*))/g);
+            if (!parts || parts.length < 3) continue;
+            
+            const category = (parts[0] || '').replace(/^"|"$/g, '').trim();
+            const question = (parts[1] || '').replace(/^"|"$/g, '').trim();
+            const answer = (parts[2] || '').replace(/^"|"$/g, '').trim();
+            const language = (parts[3] || 'urdu').replace(/^"|"$/g, '').trim();
+            
+            if (category && question && answer) {
+                if (addTraining(category, question, answer, language)) {
+                    imported++;
+                }
+            }
+        }
+
+        console.log(`✅ Imported ${imported} training records`);
+        return imported;
+    } catch (error) {
+        console.error('❌ Error importing:', error);
+        return 0;
+    }
+}
+
+module.exports = {
+    addTraining,
+    getAllTraining,
+    deleteTraining,
+    getStats,
+    search,
+    exportAsCSV,
+    importBulkTraining
+};
